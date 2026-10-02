@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inventory App</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div id="authView" class="auth-card">
+        <div class="tab-row">
+          <button class="tab active" data-target="loginForm">Login</button>
+          <button class="tab" data-target="registerForm">Daftar</button>
+        </div>
+
+        <form id="loginForm" class="auth-form active">
+          <h2>Masuk ke sistem</h2>
+          <label>
+            Username
+            <input type="text" id="loginUsername" name="username" placeholder="Masukkan username" required />
+          </label>
+          <label>
+            Password
+            <input type="password" id="loginPassword" name="password" placeholder="Masukkan password" required />
+          </label>
+          <button type="submit">Login</button>
+        </form>
+
+        <form id="registerForm" class="auth-form">
+          <h2>Buat akun baru</h2>
+          <label>
+            Username
+            <input type="text" id="registerUsername" name="username" placeholder="Username" required />
+          </label>
+          <label>
+            Email
+            <input type="email" id="registerEmail" name="email" placeholder="Email" required />
+          </label>
+          <label>
+            Password
+            <input type="password" id="registerPassword" name="password" placeholder="Minimal 6 karakter" required />
+          </label>
+          <button type="submit">Daftar</button>
+        </form>
+      </div>
+
+      <div id="appView" class="hidden">
+        <header class="topbar">
+          <div>
+            <h1>Inventaris Barang</h1>
+            <p id="welcomeText">Selamat datang</p>
+          </div>
+          <button id="logoutBtn" class="secondary-btn">Logout</button>
+        </header>
+
+        <section class="stats-grid">
+          <div class="stat-card">
+            <span>Total Barang</span>
+            <strong id="totalProducts">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Total Stok</span>
+            <strong id="totalStock">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Barang Masuk</span>
+            <strong id="incomingQty">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Barang Keluar</span>
+            <strong id="outgoingQty">0</strong>
+          </div>
+        </section>
+
+        <section class="panel-grid">
+          <div class="panel">
+            <h3>Tambah Barang</h3>
+            <form id="productForm">
+              <label>
+                Nama Barang
+                <input type="text" id="productName" required />
+              </label>
+              <label>
+                SKU
+                <input type="text" id="productSku" required />
+              </label>
+              <label>
+                Kategori
+                <input type="text" id="productCategory" placeholder="Elektronik, ATK, dll" />
+              </label>
+              <label>
+                Deskripsi
+                <textarea id="productDescription" rows="3" placeholder="Catatan barang"></textarea>
+              </label>
+              <label>
+                Stok Awal
+                <input type="number" id="productInitialStock" min="0" value="0" />
+              </label>
+              <button type="submit">Simpan Barang</button>
+            </form>
+          </div>
+
+          <div class="panel">
+            <h3>Catat Transaksi</h3>
+            <form id="transactionForm">
+              <label>
+                Barang
+                <select id="transactionProduct" required>
+                  <option value="">Pilih barang</option>
+                </select>
+              </label>
+              <label>
+                Jenis
+                <select id="transactionType" required>
+                  <option value="in">Barang Masuk</option>
+                  <option value="out">Barang Keluar</option>
+                </select>
+              </label>
+              <label>
+                Jumlah
+                <input type="number" id="transactionQty" min="1" value="1" required />
+              </label>
+              <label>
+                Catatan
+                <input type="text" id="transactionNote" placeholder="Contoh: pembelian, penjualan, retur" />
+              </label>
+              <button type="submit">Simpan Transaksi</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="data-section">
+          <div class="table-card">
+            <h3>Daftar Barang</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nama</th>
+                  <th>SKU</th>
+                  <th>Kategori</th>
+                  <th>Stok</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="productTableBody"></tbody>
+            </table>
+          </div>
+
+          <div class="table-card">
+            <h3>Riwayat Transaksi</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Barang</th>
+                  <th>Jenis</th>
+                  <th>Jumlah</th>
+                  <th>Catatan</th>
+                  <th>Waktu</th>
+                </tr>
+              </thead>
+              <tbody id="transactionTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
