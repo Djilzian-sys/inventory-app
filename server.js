@@ -1,0 +1,265 @@
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const {
+  initDatabase,
+  createUser,
+  findUserByUsername,
+  getProducts,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  addTransaction,
+  getTransactions,
+  getDashboardStats,
+  getProductById
+} = require('./db');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'inventory-secret-key-change-this';
+
+// Middleware
+app.use(cors({
+  origin: '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Token Management
+function createToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      username: user.username,
+      email: user.email
+    },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+}
+
+// Auth Middleware
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'Token tidak valid atau tidak ada.' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Sesi login sudah berakhir.' });
+  }
+}
+
+// Health Check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Inventory API berjalan dengan baik.',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Auth Routes
+app.post('/api/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
+      return res.status(400).json({ message: 'Username, email, dan password wajib diisi.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: 'Password minimal 6 karakter.' });
+    }
+
+    const user = await createUser({
+      username: String(username).trim(),
+      email: String(email).trim(),
+      password: String(password)
+    });
+
+    const token = createToken(user);
+    return res.status(201).json({ token, user });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Registrasi gagal.' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ message: 'Username dan password wajib diisi.' });
+    }
+
+    const user = await findUserByUsername(String(username).trim());
+    if (!user) {
+      return res.status(401).json({ message: 'Username atau password salah.' });
+    }
+
+    const isValidPassword = await bcrypt.compare(String(password), user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ message: 'Username atau password salah.' });
+    }
+
+    const safeUser = {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      created_at: user.created_at
+    };
+
+    const token = createToken(safeUser);
+    return res.json({ token, user: safeUser });
+  } catch (error) {
+    return res.status(500).json({ message: 'Login gagal.' });
+  }
+});
+
+app.get('/api/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await findUserByUsername(req.user.username);
+    if (!user) {
+      return res.status(404).json({ message: 'User tidak ditemukan.' });
+    }
+
+    return res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        created_at: user.created_at
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil data user.' });
+  }
+});
+
+// Product Routes
+app.get('/api/products', authMiddleware, async (req, res) => {
+  try {
+    const products = await getProducts();
+    return res.json({ products });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil data produk.' });
+  }
+});
+
+app.post('/api/products', authMiddleware, async (req, res) => {
+  try {
+    const { name, sku, category, description, initialStock } = req.body;
+    const product = await createProduct({ name, sku, category, description, initialStock }, req.user.id);
+    return res.status(201).json({ product, message: 'Barang berhasil ditambahkan.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal menambahkan barang.' });
+  }
+});
+
+app.put('/api/products/:id', authMiddleware, async (req, res) => {
+  try {
+    const product = await updateProduct(Number(req.params.id), req.body);
+    return res.json({ product, message: 'Barang berhasil diperbarui.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal memperbarui barang.' });
+  }
+});
+
+app.delete('/api/products/:id', authMiddleware, async (req, res) => {
+  try {
+    const product = await deleteProduct(Number(req.params.id));
+    return res.json({ product, message: 'Barang berhasil dihapus.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal menghapus barang.' });
+  }
+});
+
+// Transaction Routes
+app.get('/api/transactions', authMiddleware, async (req, res) => {
+  try {
+    const transactions = await getTransactions();
+    return res.json({ transactions });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil transaksi.' });
+  }
+});
+
+app.post('/api/transactions', authMiddleware, async (req, res) => {
+  try {
+    const { productId, type, quantity, note } = req.body;
+
+    if (!productId || !type || !quantity) {
+      return res.status(400).json({ message: 'Produk, jenis, dan jumlah transaksi wajib diisi.' });
+    }
+
+    const product = await getProductById(Number(productId));
+    if (!product) {
+      return res.status(404).json({ message: 'Barang tidak ditemukan.' });
+    }
+
+    const transaction = await addTransaction({
+      productId: Number(productId),
+      type,
+      quantity: Number(quantity),
+      note
+    }, req.user.id);
+
+    return res.status(201).json({ transaction, message: `Transaksi ${type} berhasil dicatat.` });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal mencatat transaksi.' });
+  }
+});
+
+// Dashboard Route
+app.get('/api/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const stats = await getDashboardStats();
+    return res.json({ stats });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil ringkasan dashboard.' });
+  }
+});
+
+// Serve static HTML for all other routes (SPA)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Error Handler
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(500).json({ message: 'Terjadi kesalahan pada server.' });
+});
+
+// Start Server
+async function startServer() {
+  try {
+    await initDatabase();
+    app.listen(PORT, () => {
+      console.log(`✅ Inventory app running at http://localhost:${PORT}`);
+      console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
+    });
+  } catch (error) {
+    console.error('❌ Server failed to start:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
+
+module.exports = app;
