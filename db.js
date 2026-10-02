@@ -1,262 +1,252 @@
-const sqlite3 = require('sqlite3').verbose();
-const bcrypt = require('bcryptjs');
-const fs = require('fs');
+const express = require('express');
+const cors = require('cors');
 const path = require('path');
-
-const dbDirectory = path.join(__dirname, 'data');
-fs.mkdirSync(dbDirectory, { recursive: true });
-
-const dbPath = path.join(dbDirectory, 'inventory.db');
-const db = new sqlite3.Database(dbPath);
-
-function run(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) reject(err);
-      else resolve({ id: this.lastID, changes: this.changes });
-    });
-  });
-}
-
-function get(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-}
-
-function all(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-}
-
-async function initDatabase() {
-  db.serialize(async () => {
-    db.run('PRAGMA foreign_keys = ON;');
-
-    db.run(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT NOT NULL UNIQUE,
-        email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    db.run(`
-      CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        sku TEXT NOT NULL UNIQUE,
-        category TEXT,
-        description TEXT,
-        stock INTEGER NOT NULL DEFAULT 0,
-        created_by INTEGER NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-
-    db.run(`
-      CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id INTEGER NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('in', 'out')),
-        quantity INTEGER NOT NULL CHECK(quantity > 0),
-        note TEXT,
-        created_by INTEGER NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-
-    const adminUser = await get('SELECT id FROM users WHERE username = ?', ['admin']);
-    if (!adminUser) {
-      const passwordHash = await bcrypt.hash('admin123', 10);
-      await run(
-        'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-        ['admin', 'admin@inventory.local', passwordHash]
-      );
-    }
-  });
-}
-
-async function createUser({ username, email, password }) {
-  const existing = await get('SELECT id FROM users WHERE username = ? OR email = ?', [username, email]);
-  if (existing) {
-    throw new Error('Username atau email sudah terdaftar.');
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  const result = await run(
-    'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-    [username.trim(), email.trim(), passwordHash]
-  );
-
-  return await get('SELECT id, username, email, created_at FROM users WHERE id = ?', [result.id]);
-}
-
-async function findUserByUsername(username) {
-  return await get('SELECT * FROM users WHERE username = ?', [username]);
-}
-
-async function getProducts() {
-  return await all(`
-    SELECT p.*, u.username AS created_by_name
-    FROM products p
-    LEFT JOIN users u ON u.id = p.created_by
-    ORDER BY p.created_at DESC
-  `);
-}
-
-async function getProductById(id) {
-  return await get(`
-    SELECT p.*, u.username AS created_by_name
-    FROM products p
-    LEFT JOIN users u ON u.id = p.created_by
-    WHERE p.id = ?
-  `, [id]);
-}
-
-async function createProduct({ name, sku, category, description, initialStock }, createdBy) {
-  const cleanName = name.trim();
-  const cleanSku = sku.trim();
-
-  if (!cleanName || !cleanSku) {
-    throw new Error('Nama barang dan SKU wajib diisi.');
-  }
-
-  const existingProduct = await get('SELECT id FROM products WHERE sku = ?', [cleanSku]);
-  if (existingProduct) {
-    throw new Error('SKU sudah digunakan. Gunakan SKU lain.');
-  }
-
-  const result = await run(
-    `INSERT INTO products (name, sku, category, description, stock, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
-    [cleanName, cleanSku, category || 'Umum', description || '', Number(initialStock) || 0, createdBy]
-  );
-
-  const newProduct = await getProductById(result.id);
-
-  if (Number(initialStock) > 0) {
-    await addTransaction({ productId: result.id, type: 'in', quantity: Number(initialStock), note: 'Stok awal', createdBy });
-    newProduct.stock = Number(initialStock);
-  }
-
-  return newProduct;
-}
-
-async function updateProduct(id, payload) {
-  const product = await getProductById(id);
-  if (!product) throw new Error('Barang tidak ditemukan.');
-
-  const updatedName = payload.name?.trim() || product.name;
-  const updatedSku = payload.sku?.trim() || product.sku;
-  const updatedCategory = payload.category?.trim() || product.category;
-  const updatedDescription = payload.description?.trim() ?? product.description;
-
-  if (updatedSku !== product.sku) {
-    const skuExists = await get('SELECT id FROM products WHERE sku = ? AND id != ?', [updatedSku, id]);
-    if (skuExists) {
-      throw new Error('SKU sudah digunakan.');
-    }
-  }
-
-  await run(
-    `UPDATE products SET name = ?, sku = ?, category = ?, description = ? WHERE id = ?`,
-    [updatedName, updatedSku, updatedCategory, updatedDescription, id]
-  );
-
-  return await getProductById(id);
-}
-
-async function deleteProduct(id) {
-  const product = await getProductById(id);
-  if (!product) throw new Error('Barang tidak ditemukan.');
-
-  await run('DELETE FROM products WHERE id = ?', [id]);
-  return product;
-}
-
-async function addTransaction({ productId, type, quantity, note }, createdBy) {
-  const product = await getProductById(productId);
-  if (!product) throw new Error('Barang tidak ditemukan.');
-
-  const qty = Number(quantity);
-  if (!['in', 'out'].includes(type)) {
-    throw new Error('Jenis transaksi tidak valid.');
-  }
-
-  if (!Number.isFinite(qty) || qty <= 0) {
-    throw new Error('Jumlah harus lebih dari 0.');
-  }
-
-  if (type === 'out' && qty > product.stock) {
-    throw new Error(`Stok tidak mencukupi. Stok saat ini: ${product.stock}`);
-  }
-
-  const transaction = await run(
-    `INSERT INTO transactions (product_id, type, quantity, note, created_by) VALUES (?, ?, ?, ?, ?)`,
-    [productId, type, qty, note || '', createdBy]
-  );
-
-  const nextStock = type === 'in' ? product.stock + qty : product.stock - qty;
-  await run('UPDATE products SET stock = ? WHERE id = ?', [nextStock, productId]);
-
-  return { id: transaction.id, product_id: productId, type, quantity: qty, note: note || '', created_by: createdBy };
-}
-
-async function getTransactions() {
-  return await all(`
-    SELECT t.*, p.name AS product_name, u.username AS created_by_name
-    FROM transactions t
-    JOIN products p ON p.id = t.product_id
-    JOIN users u ON u.id = t.created_by
-    ORDER BY t.created_at DESC
-  `);
-}
-
-async function getDashboardStats() {
-  const [productsCount, totalStock, incoming, outgoing] = await Promise.all([
-    get('SELECT COUNT(*) AS total FROM products'),
-    get('SELECT COALESCE(SUM(stock), 0) AS total FROM products'),
-    get('SELECT COALESCE(SUM(quantity), 0) AS total FROM transactions WHERE type = ?', ['in']),
-    get('SELECT COALESCE(SUM(quantity), 0) AS total FROM transactions WHERE type = ?', ['out'])
-  ]);
-
-  const lowStock = await all('SELECT * FROM products WHERE stock <= 5 ORDER BY stock ASC LIMIT 10');
-
-  return {
-    totalProducts: productsCount.total,
-    totalStock: totalStock.total,
-    incomingQty: incoming.total,
-    outgoingQty: outgoing.total,
-    lowStock
-  };
-}
-
-module.exports = {
-  db,
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const {
   initDatabase,
-  run,
-  get,
-  all,
   createUser,
   findUserByUsername,
+  findUserById,
+  updateUserProfile,
   getProducts,
-  getProductById,
   createProduct,
   updateProduct,
   deleteProduct,
   addTransaction,
   getTransactions,
-  getDashboardStats
-};
+  getDashboardStats,
+  getProductById
+} = require('./db');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'inventory-secret-key-change-this';
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+function createToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      storeName: user.store_name || user.storeName
+    },
+    JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+}
+
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'Token tidak valid atau tidak ada.' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Sesi login sudah berakhir.' });
+  }
+}
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Inventory API berjalan dengan baik.' });
+});
+
+app.post('/api/register', async (req, res) => {
+  try {
+    const { username, email, password, storeName } = req.body;
+
+    if (!username || !email || !password || !storeName) {
+      return res.status(400).json({ message: 'Nama toko, username, email, dan password wajib diisi.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: 'Password minimal 6 karakter.' });
+    }
+
+    const user = await createUser({
+      username: String(username).trim(),
+      email: String(email).trim(),
+      password: String(password),
+      storeName: String(storeName).trim()
+    });
+
+    const token = createToken(user);
+    return res.status(201).json({ token, user });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Registrasi gagal.' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ message: 'Username dan password wajib diisi.' });
+    }
+
+    const user = await findUserByUsername(String(username).trim());
+    if (!user) {
+      return res.status(401).json({ message: 'Username atau password salah.' });
+    }
+
+    const isValidPassword = await bcrypt.compare(String(password), user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ message: 'Username atau password salah.' });
+    }
+
+    const safeUser = {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      store_name: user.store_name,
+      created_at: user.created_at
+    };
+
+    const token = createToken(safeUser);
+    return res.json({ token, user: safeUser });
+  } catch (error) {
+    return res.status(500).json({ message: 'Login gagal.' });
+  }
+});
+
+app.get('/api/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await findUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User tidak ditemukan.' });
+    }
+
+    return res.json({ user });
+  } catch (error) {
+    return res.status(500).json({ message: 'Gagal mengambil data user.' });
+  }
+});
+
+app.put('/api/me', authMiddleware, async (req, res) => {
+  try {
+    const { storeName, email } = req.body;
+
+    const user = await updateUserProfile(req.user.id, { storeName, email });
+    const token = createToken(user);
+
+    return res.json({ user, token, message: 'Profil berhasil diperbarui.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal memperbarui profil.' });
+  }
+});
+
+app.get('/api/products', authMiddleware, async (req, res) => {
+  try {
+    const products = await getProducts(req.user.id);
+    return res.json({ products });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil data produk.' });
+  }
+});
+
+app.post('/api/products', authMiddleware, async (req, res) => {
+  try {
+    const { name, sku, category, description, initialStock, price, minStock } = req.body;
+    const product = await createProduct({ name, sku, category, description, initialStock, price, minStock }, req.user.id);
+    return res.status(201).json({ product, message: 'Barang berhasil ditambahkan.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal menambahkan barang.' });
+  }
+});
+
+app.put('/api/products/:id', authMiddleware, async (req, res) => {
+  try {
+    const product = await updateProduct(Number(req.params.id), req.body, req.user.id);
+    return res.json({ product, message: 'Barang berhasil diperbarui.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal memperbarui barang.' });
+  }
+});
+
+app.delete('/api/products/:id', authMiddleware, async (req, res) => {
+  try {
+    const product = await deleteProduct(Number(req.params.id), req.user.id);
+    return res.json({ product, message: 'Barang berhasil dihapus.' });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal menghapus barang.' });
+  }
+});
+
+app.get('/api/transactions', authMiddleware, async (req, res) => {
+  try {
+    const transactions = await getTransactions(req.user.id);
+    return res.json({ transactions });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil transaksi.' });
+  }
+});
+
+app.post('/api/transactions', authMiddleware, async (req, res) => {
+  try {
+    const { productId, type, quantity, note } = req.body;
+
+    if (!productId || !type || !quantity) {
+      return res.status(400).json({ message: 'Produk, jenis, dan jumlah transaksi wajib diisi.' });
+    }
+
+    const product = await getProductById(Number(productId), req.user.id);
+    if (!product) {
+      return res.status(404).json({ message: 'Barang tidak ditemukan.' });
+    }
+
+    const transaction = await addTransaction({
+      productId: Number(productId),
+      type,
+      quantity: Number(quantity),
+      note
+    }, req.user.id);
+
+    return res.status(201).json({ transaction, message: `Transaksi ${type === 'in' ? 'masuk' : 'keluar'} berhasil dicatat.` });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || 'Gagal mencatat transaksi.' });
+  }
+});
+
+app.get('/api/dashboard', authMiddleware, async (req, res) => {
+  try {
+    const stats = await getDashboardStats(req.user.id);
+    return res.json({ stats });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Gagal mengambil ringkasan dashboard.' });
+  }
+});
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+async function startServer() {
+  await initDatabase();
+  app.listen(PORT, () => {
+    console.log(`\n🚀 Inventory App berjalan di http://localhost:${PORT}`);
+    console.log(`\n📱 Akses di browser atau mobile:`);
+    console.log(`   - Lokal: http://localhost:${PORT}`);
+    console.log(`   - Dari phone/device lain: http://<IP-KOMPUTER>:${PORT}`);
+    console.log(`\n🔑 Akun default:`);
+    console.log(`   - Username: admin`);
+    console.log(`   - Password: admin123`);
+    console.log(`   - Toko: Toko Demo`);
+    console.log(`\n💡 Silakan buat akun baru dengan nama toko Anda sendiri.\n`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error('❌ Server gagal start:', error);
+  process.exit(1);
+});
