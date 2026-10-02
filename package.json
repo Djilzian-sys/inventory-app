@@ -12,7 +12,9 @@
     "stock",
     "express",
     "sqlite",
-    "authentication"
+    "authentication",
+    "pdf",
+    "excel"
   ],
   "author": "Djilzian-sys",
   "license": "MIT",
@@ -21,6 +23,8 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "pdfkit": "^0.13.0",
+    "xlsx": "^0.18.5"
   }
 }
